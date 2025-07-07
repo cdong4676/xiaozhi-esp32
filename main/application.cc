@@ -267,7 +267,7 @@ void Application::PlaySound(const std::string_view& sound) {
     {
         std::unique_lock<std::mutex> lock(mutex_);
         audio_decode_cv_.wait(lock, [this]() {
-            return audio_decode_queue_.empty();
+            return audio_decode_queue_.empty(); 
         });
     }
     background_task_->WaitForCompletion();

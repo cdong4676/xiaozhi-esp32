@@ -173,7 +173,7 @@ private:
         
         camera_config.sccb_i2c_port = I2C_NUM_0;
         
-        camera_config.pixel_format = PIXFORMAT_RGB565;
+        camera_config.pixel_format = PIXFORMAT_JPEG;
         camera_config.frame_size = FRAMESIZE_240X240;
         camera_config.jpeg_quality = 12;
         camera_config.fb_count = 1;

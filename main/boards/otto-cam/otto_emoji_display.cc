@@ -1,4 +1,4 @@
-#include "sparkbot_emoji_display.h"
+#include "otto_emoji_display.h"
 
 #include <esp_log.h>
 
@@ -9,10 +9,10 @@
 #include "display/lcd_display.h"
 #include "font_awesome_symbols.h"
 
-#define TAG "SparkbotEmojiDisplay"
+#define TAG "OttoCam_EmojiDisplay"
 
 // 表情映射表 - 将原版21种表情映射到现有6个GIF
-const SparkbotEmojiDisplay::EmotionMap SparkbotEmojiDisplay::emotion_maps_[] = {
+const OttoEmojiDisplay::EmotionMap OttoEmojiDisplay::emotion_maps_[] = {
     // 中性/平静类表情 -> staticstate
     {"neutral", &staticstate},
     {"relaxed", &staticstate},
@@ -49,7 +49,7 @@ const SparkbotEmojiDisplay::EmotionMap SparkbotEmojiDisplay::emotion_maps_[] = {
     {nullptr, nullptr}  // 结束标记
 };
 
-SparkbotEmojiDisplay::SparkbotEmojiDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
+OttoEmojiDisplay::OttoEmojiDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
                                    int width, int height, int offset_x, int offset_y, bool mirror_x,
                                    bool mirror_y, bool swap_xy, DisplayFonts fonts)
     : SpiLcdDisplay(panel_io, panel, width, height, offset_x, offset_y, mirror_x, mirror_y, swap_xy,
@@ -61,7 +61,7 @@ SparkbotEmojiDisplay::SparkbotEmojiDisplay(esp_lcd_panel_io_handle_t panel_io, e
     // 创建预览图片定时器
     esp_timer_create_args_t preview_timer_args = {
         .callback = [](void *arg) {
-            SparkbotEmojiDisplay *display = static_cast<SparkbotEmojiDisplay*>(arg);
+            OttoEmojiDisplay *display = static_cast<OttoEmojiDisplay*>(arg);
             display->HidePreviewImage();
         },
         .arg = this,
@@ -70,11 +70,11 @@ SparkbotEmojiDisplay::SparkbotEmojiDisplay(esp_lcd_panel_io_handle_t panel_io, e
         .skip_unhandled_events = false,
     };
     ESP_ERROR_CHECK(esp_timer_create(&preview_timer_args, &preview_timer_));
-    
+
     SetupGifContainer();
 };
 
-SparkbotEmojiDisplay::~SparkbotEmojiDisplay() {
+OttoEmojiDisplay::~OttoEmojiDisplay() {
     if (preview_timer_ != nullptr) {
         esp_timer_stop(preview_timer_);
         esp_timer_delete(preview_timer_);
@@ -82,7 +82,7 @@ SparkbotEmojiDisplay::~SparkbotEmojiDisplay() {
     }
 }
 
-void SparkbotEmojiDisplay::SetupGifContainer() {
+void OttoEmojiDisplay::SetupGifContainer() {
     DisplayLockGuard lock(this);
 
     if (emotion_label_) {
@@ -146,7 +146,7 @@ void SparkbotEmojiDisplay::SetupGifContainer() {
     LcdDisplay::SetTheme("dark");
 }
 
-void SparkbotEmojiDisplay::SetEmotion(const char* emotion) {
+void OttoEmojiDisplay::SetEmotion(const char* emotion) {
     if (!emotion || !emotion_gif_) {
         return;
     }
@@ -164,7 +164,7 @@ void SparkbotEmojiDisplay::SetEmotion(const char* emotion) {
     ESP_LOGI(TAG, "未知表情'%s'，使用默认", emotion);
 }
 
-void SparkbotEmojiDisplay::SetChatMessage(const char* role, const char* content) {
+void OttoEmojiDisplay::SetChatMessage(const char* role, const char* content) {
     DisplayLockGuard lock(this);
     if (chat_message_label_ == nullptr) {
         return;
@@ -181,7 +181,7 @@ void SparkbotEmojiDisplay::SetChatMessage(const char* role, const char* content)
     ESP_LOGI(TAG, "设置聊天消息 [%s]: %s", role, content);
 }
 
-void SparkbotEmojiDisplay::SetIcon(const char* icon) {
+void OttoEmojiDisplay::SetIcon(const char* icon) {
     if (!icon) {
         return;
     }
@@ -204,7 +204,7 @@ void SparkbotEmojiDisplay::SetIcon(const char* icon) {
     }
 }
 
-void SparkbotEmojiDisplay::HidePreviewImage() {
+void OttoEmojiDisplay::HidePreviewImage() {
     DisplayLockGuard lock(this);
     if (preview_image_obj_ == nullptr) {
         return;
@@ -219,7 +219,7 @@ void SparkbotEmojiDisplay::HidePreviewImage() {
     ESP_LOGI(TAG, "预览图片定时隐藏，恢复表情显示");
 }
 
-void SparkbotEmojiDisplay::SetPreviewImage(const lv_img_dsc_t* img_dsc) {
+void OttoEmojiDisplay::SetPreviewImage(const lv_img_dsc_t* img_dsc) {
     DisplayLockGuard lock(this);
     if (preview_image_obj_ == nullptr) {
         return;
@@ -272,3 +272,4 @@ void SparkbotEmojiDisplay::SetPreviewImage(const lv_img_dsc_t* img_dsc) {
         ESP_LOGI(TAG, "隐藏图片预览，恢复表情显示");
     }
 }
+
