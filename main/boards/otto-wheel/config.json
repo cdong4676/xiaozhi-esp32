@@ -1,0 +1,12 @@
+{
+    "target": "esp32s3",
+    "builds": [
+        {
+            "name": "otto-wheel",
+            "sdkconfig_append": [
+                "CONFIG_ESP_PHY_MAX_WIFI_TX_POWER=20",
+                "CONFIG_ESP_PHY_MAX_TX_POWER=20"
+            ]
+        }
+    ]
+}
