@@ -199,13 +199,14 @@ elseif(CONFIG_BOARD_TYPE_ELECTRON_BOT)
     set(BOARD_TYPE "electron-bot")
 elseif(CONFIG_BOARD_TYPE_BREAD_COMPACT_WIFI_CAM)
     set(BOARD_TYPE "bread-compact-wifi-s3cam")
-<<<<<<< .merge_file_B4Ju1J
 elseif(CONFIG_BOARD_TYPE_OTTO_CAM)
     set(BOARD_TYPE "otto-cam")
-=======
-elseif(CONFIG_BOARD_TYPE_JIUCHUAN )
+elseif(CONFIG_BOARD_TYPE_OTTO_WHEEL)
+    set(BOARD_TYPE "otto-wheel")
+elseif(CONFIG_BOARD_TYPE_JIUCHUAN)
     set(BOARD_TYPE "jiuchuan-s3")
->>>>>>> .merge_file_vaAgG0
+elseif(CONFIG_BOARD_TYPE_ELEGOO_ROBOT)
+    set(BOARD_TYPE "elegoo-robotcar")
 endif()
 file(GLOB BOARD_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_TYPE}/*.cc
