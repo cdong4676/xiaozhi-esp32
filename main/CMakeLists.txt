@@ -214,17 +214,15 @@ elseif(CONFIG_BOARD_TYPE_OTTO_WHEEL)
     set(BOARD_TYPE "otto-wheel")
 elseif(CONFIG_BOARD_TYPE_JIUCHUAN)
     set(BOARD_TYPE "jiuchuan-s3")
-<<<<<<< HEAD
 elseif(CONFIG_BOARD_TYPE_ELEGOO_ROBOT)
     set(BOARD_TYPE "elegoo-robotcar")
-=======
 elseif(CONFIG_BOARD_TYPE_LABPLUS_MPYTHON_V3)
     set(BOARD_TYPE "labplus-mpython-v3") 
 elseif(CONFIG_BOARD_TYPE_LABPLUS_LEDONG_V2)
     set(BOARD_TYPE "labplus-ledong-v2") 
 elseif(CONFIG_BOARD_TYPE_SURFER_C3_1_14TFT)
     set(BOARD_TYPE "surfer-c3-1.14tft")
->>>>>>> origin/main
+
 endif()
 file(GLOB BOARD_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_TYPE}/*.cc

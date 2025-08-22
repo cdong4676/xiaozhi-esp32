@@ -3,13 +3,13 @@
 
 #include <driver/gpio.h>
 
-#define UART_ECHO_TXD GPIO_NUM_48
-#define UART_ECHO_RXD GPIO_NUM_45
+#define UART_ECHO_TXD GPIO_NUM_45
+#define UART_ECHO_RXD GPIO_NUM_48
 #define UART_ECHO_RTS (-1)
 #define UART_ECHO_CTS (-1)
 
 #define ECHO_UART_PORT_NUM      UART_NUM_1
-#define ECHO_UART_BAUD_RATE     (115200)
+#define ECHO_UART_BAUD_RATE     (9600)
 #define BUF_SIZE                (1024)
 
 #define AUDIO_INPUT_SAMPLE_RATE 16000
@@ -74,42 +74,33 @@
 
 #define ELEGOO_ROBOT_VERSION "1.0.0"
 
-/* 网络通信配置 */
-#define NETWORK_TCP_PORT_DEFAULT        100
-#define NETWORK_UDP_PORT_DEFAULT        8888
-#define NETWORK_BUFFER_SIZE             1024
-#define NETWORK_TASK_STACK_SIZE         4096
-#define NETWORK_TASK_PRIORITY           5
-#define UDP_BROADCAST_INTERVAL_MS       1000
-#define UART_READ_TIMEOUT_MS            100
-#define NETWORK_CLIENT_DISCONNECT_DELAY_MS  200
-#define NETWORK_TASK_STOP_DELAY_MS      100
+#define NETWORK_TCP_PORT_DEFAULT        8080
+#define NETWORK_UDP_PORT_DEFAULT        8888               
+#define NETWORK_TASK_STACK_SIZE         3072                
+#define UART_TASK_STACK_SIZE            3072                
+#define NETWORK_TASK_PRIORITY           5                   
+#define UDP_TASK_STACK_SIZE             2048               
+#define UDP_TASK_PRIORITY               3                   
+#define UDP_BROADCAST_INTERVAL_MS       2000               
+#define UART_READ_TIMEOUT_MS            200                
+#define NETWORK_CLIENT_DISCONNECT_DELAY_MS  100             
+#define NETWORK_TASK_STOP_DELAY_MS      50                  
 
 // Web 服务器配置
-#define WEB_SERVER_RESPONSE_BUFFER_SIZE 100
-#define WEB_SERVER_CONTENT_BUFFER_SIZE  1024
+#define WEB_SERVER_RESPONSE_BUFFER_SIZE 64
+#define WEB_SERVER_CONTENT_BUFFER_SIZE  1024                // 减少内容缓冲区
 #define WEB_SERVER_DEFAULT_SPEED        1000
 #define WEB_SERVER_DEFAULT_MOTOR_SPEED  100
-#define WEB_SERVER_STACK_SIZE           12288               // Web服务器栈大小
+#define WEB_SERVER_STACK_SIZE           4096                // 减少Web服务器栈大小 (4KB)
 #define WEB_SERVER_INIT_RETRY_DELAY_MS  2000                // Web服务器初始化重试延迟
 
-// 内存管理配置
-#define MIN_FREE_HEAP_SIZE              (50 * 1024)         // 最小可用堆内存 (50KB)
-#define CAMERA_MIN_FREE_HEAP_SIZE       (80 * 1024)         // 摄像头初始化所需最小内存 (80KB)
-#define FACE_DETECTION_MIN_HEAP_SIZE    (100 * 1024)        // 人脸检测所需最小内存 (100KB)
 
 // 摄像头配置
-#define CAMERA_PCLK_HZ                  (40 * 1000 * 1000)
+#define CAMERA_PCLK_HZ                  (20 * 1000 * 1000)
 
-// 主任务配置
-#define MAIN_TASK_STACK_SIZE            (1024 * 8)
-#define MAIN_TASK_PRIORITY              5
 
-// 人脸检测配置
-#define FACE_DETECTOR_DELAY_MS          100                 // 人脸检测延迟
-#define FACE_DETECTOR_PROCESS_DELAY_MS  200                 // 人脸检测处理延迟
 
 // 网络任务配置
-#define NETWORK_CLIENT_RECONNECT_DELAY_MS  200              // 客户端重连延迟
+#define NETWORK_CLIENT_RECONNECT_DELAY_MS  150              // 客户端重连延迟
 
 #endif  // _BOARD_CONFIG_H_

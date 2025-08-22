@@ -4,14 +4,21 @@
 #include "esp_camera.h"
 #include <string>
 #include <thread>
+#include <memory>
 #include <lvgl.h>
+
+struct JpegChunk {
+    uint8_t* data;
+    size_t len;
+};
 
 class CameraManager : public Camera {
 public:
-    // 单例模式：获取实例
-    static CameraManager& GetInstance();
+    // 构造函数和析构函数
+    CameraManager();
+    virtual ~CameraManager();
     
-    // 初始化方法（替代构造函数）
+    // 初始化方法
     bool Initialize(const camera_config_t& config);
     
     // 禁用拷贝构造函数和赋值操作符
@@ -19,11 +26,11 @@ public:
     CameraManager& operator=(const CameraManager&) = delete;
 
     // 基础摄像头功能（继承自Camera类）
-    void SetExplainUrl(const std::string& url, const std::string& token) override;
-    bool Capture() override;
-    bool SetHMirror(bool enable) override;
-    bool SetVFlip(bool enable) override;
-    std::string Explain(const std::string& question) override;
+    virtual void SetExplainUrl(const std::string& url, const std::string& token) override;
+    virtual bool Capture() override;
+    virtual bool SetHMirror(bool enabled) override;
+    virtual bool SetVFlip(bool enabled) override;
+    virtual std::string Explain(const std::string& question) override;
 
     // 简单的帧获取和返回方法
     camera_fb_t* GetFrame();
@@ -51,13 +58,6 @@ public:
     bool IsInitialized() const { return initialized_; }
 
 private:
-    // 私有构造函数和析构函数
-    CameraManager();
-    ~CameraManager();
-    
-    // 静态实例
-    static CameraManager* instance_;
-    
     // 初始化状态
     bool initialized_;
     
@@ -65,17 +65,10 @@ private:
     std::string explain_token_;
     camera_fb_t* fb_ = nullptr;
     lv_img_dsc_t preview_image_;
-    std::thread encoder_thread_;
     
     // 流控制和统计
     bool streaming_enabled_;
     uint32_t frames_captured_;
     uint32_t frames_dropped_;
     uint64_t last_frame_time_;
-
-    // JPEG编码相关结构
-    struct JpegChunk {
-        uint8_t* data;
-        size_t len;
-    };
 };

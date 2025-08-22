@@ -224,53 +224,6 @@ void Application::DismissAlert() {
     }
 }
 
-<<<<<<< HEAD
-void Application::PlaySound(const std::string_view& sound) {
-    // Wait for the previous sound to finish
-    {
-        std::unique_lock<std::mutex> lock(mutex_);
-        audio_decode_cv_.wait(lock, [this]() {
-            return audio_decode_queue_.empty(); 
-        });
-    }
-    background_task_->WaitForCompletion();
-
-    const char* data = sound.data();
-    size_t size = sound.size();
-    for (const char* p = data; p < data + size; ) {
-        auto p3 = (BinaryProtocol3*)p;
-        p += sizeof(BinaryProtocol3);
-
-        auto payload_size = ntohs(p3->payload_size);
-        AudioStreamPacket packet;
-        packet.sample_rate = 16000;
-        packet.frame_duration = 60;
-        packet.payload.resize(payload_size);
-        memcpy(packet.payload.data(), p3->payload, payload_size);
-        p += payload_size;
-
-        std::lock_guard<std::mutex> lock(mutex_);
-        audio_decode_queue_.emplace_back(std::move(packet));
-    }
-}
-
-void Application::EnterAudioTestingMode() {
-    ESP_LOGI(TAG, "Entering audio testing mode");
-    ResetDecoder();
-    SetDeviceState(kDeviceStateAudioTesting);
-}
-
-void Application::ExitAudioTestingMode() {
-    ESP_LOGI(TAG, "Exiting audio testing mode");
-    SetDeviceState(kDeviceStateWifiConfiguring);
-    // Copy audio_testing_queue_ to audio_decode_queue_
-    std::lock_guard<std::mutex> lock(mutex_);
-    audio_decode_queue_ = std::move(audio_testing_queue_);
-    audio_decode_cv_.notify_all();
-}
-
-=======
->>>>>>> origin/main
 void Application::ToggleChatState() {
     if (device_state_ == kDeviceStateActivating) {
         SetDeviceState(kDeviceStateIdle);

@@ -439,6 +439,25 @@ bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> pa
     return true;
 }
 
+bool AudioService::PushPcmToPlaybackQueue(std::vector<int16_t>&& pcm_data, bool wait) {
+    auto task = std::make_unique<AudioTask>();
+    task->type = kAudioTaskTypeDecodeToPlaybackQueue;
+    task->pcm = std::move(pcm_data);
+    task->timestamp = esp_timer_get_time() / 1000;
+    
+    std::unique_lock<std::mutex> lock(audio_queue_mutex_);
+    if (audio_playback_queue_.size() >= MAX_PLAYBACK_TASKS_IN_QUEUE) {
+        if (wait) {
+            audio_queue_cv_.wait(lock, [this]() { return audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE; });
+        } else {
+            return false;
+        }
+    }
+    audio_playback_queue_.push_back(std::move(task));
+    audio_queue_cv_.notify_all();
+    return true;
+}
+
 std::unique_ptr<AudioStreamPacket> AudioService::PopPacketFromSendQueue() {
     std::lock_guard<std::mutex> lock(audio_queue_mutex_);
     if (audio_send_queue_.empty()) {
@@ -577,5 +596,32 @@ void AudioService::CheckAndUpdateAudioPowerState() {
     }
     if (!codec_->input_enabled() && !codec_->output_enabled()) {
         esp_timer_stop(audio_power_timer_);
+    }
+}
+
+void AudioService::FeedExternalAudioData(std::vector<int16_t>&& pcm_data) {
+    /* if (!audio_processor_ || !audio_processor_->IsRunning()) {
+        ESP_LOGW(TAG, "AudioProcessor is not running, cannot feed external audio data");
+        return;
+    } */
+    
+    const size_t feed_size = audio_processor_->GetFeedSize();
+    if (feed_size == 0) {
+        ESP_LOGE(TAG, "AudioProcessor feed size is 0");
+        return;
+    }
+    
+    std::lock_guard<std::mutex> lock(external_audio_mutex_);
+    
+    // 将新数据添加到缓冲区
+    external_audio_buffer_.insert(external_audio_buffer_.end(), pcm_data.begin(), pcm_data.end());
+    
+    // 当缓冲区有足够的数据时，提取完整的帧并通过AudioProcessor处理
+    while (external_audio_buffer_.size() >= feed_size) {
+        std::vector<int16_t> frame_data(external_audio_buffer_.begin(), external_audio_buffer_.begin() + feed_size);
+        external_audio_buffer_.erase(external_audio_buffer_.begin(), external_audio_buffer_.begin() + feed_size);
+        
+        // 通过AudioProcessor处理数据，它会自动调用OnOutput回调
+        audio_processor_->Feed(std::move(frame_data));
     }
 }

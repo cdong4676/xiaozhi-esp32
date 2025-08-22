@@ -10,20 +10,8 @@
 #include <cstring>
 #include <esp_timer.h>
 #include <thread>
-#include <freertos/FreeRTOS.h>
-#include <freertos/queue.h>
 
 #define TAG "CameraManager"
-
-// 静态实例初始化
-CameraManager* CameraManager::instance_ = nullptr;
-
-CameraManager& CameraManager::GetInstance() {
-    if (instance_ == nullptr) {
-        instance_ = new CameraManager();
-    }
-    return *instance_;
-}
 
 CameraManager::CameraManager() 
     : initialized_(false), streaming_enabled_(false), frames_captured_(0), frames_dropped_(0), last_frame_time_(0) {
@@ -46,28 +34,52 @@ bool CameraManager::Initialize(const camera_config_t& config) {
         return false;
     }
 
-    // 初始化预览图像缓冲区
-    sensor_t* s = esp_camera_sensor_get();
-    if (s != nullptr) {
-        if (s->id.PID == OV2640_PID) {
-            s->set_framesize(s, FRAMESIZE_240X240);
-            s->set_vflip(s, 1);
-            s->set_hmirror(s, 1);
-        }
+    sensor_t *s = esp_camera_sensor_get(); // 获取摄像头型号
+    if (s->id.PID == GC0308_PID) {
+        s->set_hmirror(s, 0);  // 这里控制摄像头镜像 写1镜像 写0不镜像
+    }
+    s->set_vflip(s, 1);  // 这里控制摄像头垂直镜像 写1镜像 写0不镜像
+
+    // 初始化预览图片的内存
+    memset(&preview_image_, 0, sizeof(preview_image_));
+    preview_image_.header.magic = LV_IMAGE_HEADER_MAGIC;
+    preview_image_.header.cf = LV_COLOR_FORMAT_RGB565;
+    preview_image_.header.flags = LV_IMAGE_FLAGS_ALLOCATED | LV_IMAGE_FLAGS_MODIFIABLE;
+
+    switch (config.frame_size) {
+        case FRAMESIZE_SVGA:
+            preview_image_.header.w = 800;
+            preview_image_.header.h = 600;
+            break;
+        case FRAMESIZE_VGA:
+            preview_image_.header.w = 640;
+            preview_image_.header.h = 480;
+            break;
+        case FRAMESIZE_QVGA:
+            preview_image_.header.w = 320;
+            preview_image_.header.h = 240;
+            break;
+        case FRAMESIZE_128X128:
+            preview_image_.header.w = 128;
+            preview_image_.header.h = 128;
+            break;
+        case FRAMESIZE_240X240:
+            preview_image_.header.w = 240;
+            preview_image_.header.h = 240;
+            break;
+        default:
+            ESP_LOGE(TAG, "Unsupported frame size: %d, image preview will not be shown", config.frame_size);
+            preview_image_.data_size = 0;
+            preview_image_.data = nullptr;
+            return false;
     }
 
-    // 获取帧缓冲区信息
-    camera_fb_t* test_fb = esp_camera_fb_get();
-    if (test_fb != nullptr) {
-        size_t preview_size = test_fb->width * test_fb->height * 2; // RGB565
-        preview_image_.data = (uint8_t*)heap_caps_aligned_alloc(16, preview_size, MALLOC_CAP_SPIRAM);
-        if (preview_image_.data != nullptr) {
-            preview_image_.data_size = preview_size;
-            preview_image_.header.w = test_fb->width;
-            preview_image_.header.h = test_fb->height;
-            preview_image_.header.cf = LV_IMG_CF_TRUE_COLOR;
-        }
-        esp_camera_fb_return(test_fb);
+    preview_image_.header.stride = preview_image_.header.w * 2;
+    preview_image_.data_size = preview_image_.header.w * preview_image_.header.h * 2;
+    preview_image_.data = (uint8_t*)heap_caps_malloc(preview_image_.data_size, MALLOC_CAP_SPIRAM);
+    if (preview_image_.data == nullptr) {
+        ESP_LOGE(TAG, "Failed to allocate memory for preview image");
+        return false;
     }
 
     initialized_ = true;
@@ -103,53 +115,7 @@ void CameraManager::SetExplainUrl(const std::string& url, const std::string& tok
     explain_token_ = token;
 }
 
-bool CameraManager::Capture() {
-    if (encoder_thread_.joinable()) {
-        encoder_thread_.join();
-    }
 
-    int frames_to_get = 2;
-    // 尝试获取稳定的帧
-    for (int i = 0; i < frames_to_get; i++) {
-        if (fb_ != nullptr) {
-            esp_camera_fb_return(fb_);
-        }
-        fb_ = esp_camera_fb_get();
-        if (fb_ == nullptr) {
-            ESP_LOGE(TAG, "Camera capture failed");
-            return false;
-        }
-    }
-
-    frames_captured_++;
-    last_frame_time_ = esp_timer_get_time();
-
-    // 如果预览图片buffer为空，则跳过预览
-    if (preview_image_.data_size == 0) {
-        ESP_LOGW(TAG, "Skip preview because of unsupported frame size");
-        return true;
-    }
-    
-    if (preview_image_.data == nullptr) {
-        ESP_LOGE(TAG, "Preview image data is not initialized");
-        return true;
-    }
-    
-    // 显示预览图片
-    auto display = Board::GetInstance().GetDisplay();
-    if (display != nullptr) {
-        auto src = (uint16_t*)fb_->buf;
-        auto dst = (uint16_t*)preview_image_.data;
-        size_t pixel_count = fb_->len / 2;
-        for (size_t i = 0; i < pixel_count; i++) {
-            // 交换每个16位字内的字节
-            dst[i] = __builtin_bswap16(src[i]);
-        }
-        display->SetPreviewImage(&preview_image_);
-    }
-    
-    return true;
-}
 
 bool CameraManager::SetHMirror(bool enabled) {
     sensor_t *s = esp_camera_sensor_get();
@@ -210,12 +176,28 @@ bool CameraManager::StopStreaming() {
 }
 
 camera_fb_t* CameraManager::GetFrame() {
-    return esp_camera_fb_get();
+    camera_fb_t* fb = esp_camera_fb_get();
+    
+    if (fb == nullptr) {
+        ESP_LOGE(TAG, "Failed to get camera frame");
+        return nullptr;
+    }
+    
+    // 验证帧数据完整性
+    if (fb->buf == nullptr || fb->len == 0) {
+        ESP_LOGE(TAG, "Invalid frame data: buf=%p, len=%d", fb->buf, fb->len);
+        esp_camera_fb_return(fb);
+        return nullptr;
+    }
+    
+    return fb;
 }
 
 void CameraManager::ReturnFrame(camera_fb_t* fb) {
     if (fb) {
         esp_camera_fb_return(fb);
+    } else {
+        ESP_LOGW(TAG, "ReturnFrame: 尝试返回NULL帧指针");
     }
 }
 
@@ -315,34 +297,66 @@ void CameraManager::ResetStatistics() {
     last_frame_time_ = esp_timer_get_time();
 }
 
+bool CameraManager::Capture() {
+   int frames_to_get = 2;
+    // Try to get a stable frame
+    for (int i = 0; i < frames_to_get; i++) {
+        if (fb_ != nullptr) {
+            esp_camera_fb_return(fb_);
+        }
+        fb_ = esp_camera_fb_get();
+        if (fb_ == nullptr) {
+            ESP_LOGE(TAG, "Camera capture failed");
+            return false;
+        }
+    }
+
+    if (preview_image_.data_size == 0) {
+        ESP_LOGW(TAG, "Skip preview because of unsupported frame size");
+        return true;
+    }
+    if (preview_image_.data == nullptr) {
+        ESP_LOGE(TAG, "Preview image data is not initialized");
+        return true;
+    }
+    // 显示预览图片
+    auto display = Board::GetInstance().GetDisplay();
+    if (display != nullptr) {
+        // 检查摄像头的像素格式
+        sensor_t *s = esp_camera_sensor_get();
+        if (s != nullptr && s->pixformat == PIXFORMAT_JPEG) {
+            // JPEG格式需要解码为RGB565
+            if (jpg2rgb565(fb_->buf, fb_->len, (uint8_t*)preview_image_.data, JPG_SCALE_NONE)) {
+                display->SetPreviewImage(&preview_image_);
+            } else {
+                ESP_LOGE(TAG, "Failed to decode JPEG for preview");
+            }
+        } else {
+            // RGB565格式直接复制，需要字节序转换
+            auto src = (uint16_t*)fb_->buf;
+            auto dst = (uint16_t*)preview_image_.data;
+            size_t pixel_count = fb_->len / 2;
+            for (size_t i = 0; i < pixel_count; i++) {
+                // 交换每个16位字内的字节
+                dst[i] = __builtin_bswap16(src[i]);
+            }
+            display->SetPreviewImage(&preview_image_);
+        }
+    }
+    return true;
+}
+
 std::string CameraManager::Explain(const std::string& question) {
     if (explain_url_.empty()) {
         return "{\"success\": false, \"message\": \"Image explain URL or token is not set\"}";
     }
 
-    // 创建局部的JPEG队列
-    QueueHandle_t jpeg_queue = xQueueCreate(40, sizeof(JpegChunk));
-    if (jpeg_queue == nullptr) {
-        ESP_LOGE(TAG, "Failed to create JPEG queue");
-        return "{\"success\": false, \"message\": \"Failed to create JPEG queue\"}";
+    if (fb_ == nullptr || fb_->buf == nullptr || fb_->len == 0) {
+        return "{\"success\": false, \"message\": \"No valid image data available\"}";
     }
 
-    // 生成JPEG编码线程
-    encoder_thread_ = std::thread([this, jpeg_queue]() {
-        frame2jpg_cb(fb_, 80, [](void* arg, size_t index, const void* data, size_t len) -> unsigned int {
-            auto jpeg_queue = (QueueHandle_t)arg;
-            JpegChunk chunk = {
-                .data = (uint8_t*)heap_caps_aligned_alloc(16, len, MALLOC_CAP_SPIRAM),
-                .len = len
-            };
-            memcpy(chunk.data, data, len);
-            xQueueSend(jpeg_queue, &chunk, portMAX_DELAY);
-            return len;
-        }, jpeg_queue);
-    });
-
-    auto http = Board::GetInstance().CreateHttp();
-    // 构造multipart/form-data请求体
+    auto network = Board::GetInstance().GetNetwork();
+    auto http = network->CreateHttp(3);
     std::string boundary = "----ESP32_CAMERA_BOUNDARY";
 
     // 配置HTTP客户端，使用分块传输编码
@@ -353,83 +367,68 @@ std::string CameraManager::Explain(const std::string& question) {
     }
     http->SetHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
     http->SetHeader("Transfer-Encoding", "chunked");
-    
+
     if (!http->Open("POST", explain_url_)) {
         ESP_LOGE(TAG, "Failed to connect to explain URL");
-        // 清理队列
-        encoder_thread_.join();
-        JpegChunk chunk;
-        while (xQueueReceive(jpeg_queue, &chunk, portMAX_DELAY) == pdPASS) {
-            if (chunk.data != nullptr) {
-                heap_caps_free(chunk.data);
-            } else {
-                break;
-            }
-        }
-        vQueueDelete(jpeg_queue);
         return "{\"success\": false, \"message\": \"Failed to connect to explain URL\"}";
     }
-    
-    {
-        // 第一块：question字段
-        std::string question_field;
-        question_field += "--" + boundary + "\r\n";
-        question_field += "Content-Disposition: form-data; name=\"question\"\r\n";
-        question_field += "\r\n";
-        question_field += question + "\r\n";
-        http->Write(question_field.c_str(), question_field.size());
-    }
-    {
-        // 第二块：文件字段头部
-        std::string file_header;
-        file_header += "--" + boundary + "\r\n";
-        file_header += "Content-Disposition: form-data; name=\"file\"; filename=\"camera.jpg\"\r\n";
-        file_header += "Content-Type: image/jpeg\r\n";
-        file_header += "\r\n";
-        http->Write(file_header.c_str(), file_header.size());
-    }
 
-    // 第三块：JPEG数据
+    // 第一部分：question字段
+    std::string question_field = "--" + boundary + "\r\n"
+                                "Content-Disposition: form-data; name=\"question\"\r\n"
+                                "\r\n" + question + "\r\n";
+    http->Write(question_field.c_str(), question_field.size());
+
+    // 第二部分：文件字段头部
+    std::string file_header = "--" + boundary + "\r\n"
+                             "Content-Disposition: form-data; name=\"file\"; filename=\"camera.jpg\"\r\n"
+                             "Content-Type: image/jpeg\r\n"
+                             "\r\n";
+    http->Write(file_header.c_str(), file_header.size());
+
+    // 第三部分：图像数据
     size_t total_sent = 0;
-    while (true) {
-        JpegChunk chunk;
-        if (xQueueReceive(jpeg_queue, &chunk, portMAX_DELAY) != pdPASS) {
-            ESP_LOGE(TAG, "Failed to receive JPEG chunk");
-            break;
-        }
-        if (chunk.data == nullptr) {
-            break; // 最后一个块
-        }
-        http->Write((const char*)chunk.data, chunk.len);
-        total_sent += chunk.len;
-        heap_caps_free(chunk.data);
-    }
+    sensor_t *s = esp_camera_sensor_get();
     
-    // 等待编码线程完成
-    encoder_thread_.join();
-    // 清理队列
-    vQueueDelete(jpeg_queue);
-
-    {
-        // 第四块：multipart尾部
-        std::string multipart_footer;
-        multipart_footer += "\r\n--" + boundary + "--\r\n";
-        http->Write(multipart_footer.c_str(), multipart_footer.size());
+    if (s != nullptr && s->pixformat == PIXFORMAT_JPEG) {
+        // 直接发送JPEG数据
+        http->Write((const char*)fb_->buf, fb_->len);
+        total_sent = fb_->len;
+    } else {
+        // RGB格式需要转换为JPEG，使用回调直接写入HTTP
+        bool conversion_success = frame2jpg_cb(fb_, 80, 
+            [](void* arg, size_t index, const void* data, size_t len) -> unsigned int {
+                auto http_ptr = static_cast<Http*>(arg);
+                http_ptr->Write((const char*)data, len);
+                return len;
+            }, http.get());
+        
+        if (!conversion_success) {
+            http->Close();
+            return "{\"success\": false, \"message\": \"Failed to convert image to JPEG\"}";
+        }
+        total_sent = fb_->len; // 近似值
     }
-    // 结束块
+
+    // 第四部分：multipart结束
+    std::string multipart_footer = "\r\n--" + boundary + "--\r\n";
+    http->Write(multipart_footer.c_str(), multipart_footer.size());
+
+    // 结束分块传输
     http->Write("", 0);
 
     if (http->GetStatusCode() != 200) {
         ESP_LOGE(TAG, "Failed to upload photo, status code: %d", http->GetStatusCode());
+        http->Close();
         return "{\"success\": false, \"message\": \"Failed to upload photo\"}";
     }
 
     std::string result = http->ReadAll();
     http->Close();
 
-    // 获取剩余任务栈大小
-    size_t remain_stack_size = uxTaskGetStackHighWaterMark(nullptr);
-    ESP_LOGI(TAG, "Explain image size=%dx%d, compressed size=%d, remain stack size=%d, question=%s\n%s",
-        fb_->width, fb_->height, total_sent, remain_stack_size, question.c_str(), result.c_str());
+    esp_camera_fb_return(fb_);
+    ESP_LOGI(TAG, "Explain image size=%dx%d, sent size=%d, question=%s",
+        fb_->width, fb_->height, total_sent, question.c_str());
+    
     return result;
 }

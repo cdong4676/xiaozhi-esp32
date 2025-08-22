@@ -106,6 +106,12 @@ public:
     void PlaySound(const std::string_view& sound);
     bool ReadAudioData(std::vector<int16_t>& data, int sample_rate, int samples);
     void ResetDecoder();
+    
+    // 添加公开方法来处理外部音频数据
+    void FeedExternalAudioData(std::vector<int16_t>&& pcm_data);
+    
+    // 添加公开方法直接推送PCM数据到播放队列
+    bool PushPcmToPlaybackQueue(std::vector<int16_t>&& pcm_data, bool wait = false);
 
 private:
     AudioCodec* codec_ = nullptr;
@@ -137,6 +143,10 @@ private:
     // For server AEC
     std::deque<uint32_t> timestamp_queue_;
     std::mutex timestamp_mutex_;
+
+    // External audio data buffer
+    std::vector<int16_t> external_audio_buffer_;
+    std::mutex external_audio_mutex_;
 
     bool wake_word_initialized_ = false;
     bool audio_processor_initialized_ = false;
