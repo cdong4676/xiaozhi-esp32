@@ -16,7 +16,6 @@
 #include "system_reset.h"
 #include "wifi_board.h"
 #include "camera_manager.h"
-#include "elegoo_web_server.h"
 #include "mcp_server.h"
 #include "elegoo_robot_controller.h"
 

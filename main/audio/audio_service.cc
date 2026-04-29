@@ -250,7 +250,9 @@ void AudioService::AudioInputTask() {
             int samples = wake_word_->GetFeedSize();
             if (samples > 0) {
                 if (ReadAudioData(data, 16000, samples)) {
-                    wake_word_->Feed(data);
+                    if (local_audio_enabled_) {
+                        wake_word_->Feed(data);
+                    }
                     continue;
                 }
             }
@@ -262,7 +264,10 @@ void AudioService::AudioInputTask() {
             int samples = audio_processor_->GetFeedSize();
             if (samples > 0) {
                 if (ReadAudioData(data, 16000, samples)) {
-                    audio_processor_->Feed(std::move(data));
+                    // 检查是否允许本地音频处理
+                    if (local_audio_enabled_) {
+                        audio_processor_->Feed(std::move(data));
+                    }
                     continue;
                 }
             }
@@ -294,7 +299,7 @@ void AudioService::AudioOutputTask() {
             codec_->EnableOutput(true);
         }
         codec_->OutputData(task->pcm);
-
+        
         /* Update the last output time */
         last_output_time_ = std::chrono::steady_clock::now();
         debug_statistics_.playback_count++;
@@ -406,6 +411,9 @@ void AudioService::SetDecodeSampleRate(int sample_rate, int frame_duration) {
 }
 
 void AudioService::PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t>&& pcm) {
+    // 注意：local_audio_enabled_的检测已经移到AudioInputTask中更早的位置
+    // 这里不再需要检测，因为外部音频也会通过这个函数处理
+    
     auto task = std::make_unique<AudioTask>();
     task->type = type;
     task->pcm = std::move(pcm);
@@ -444,9 +452,11 @@ bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> pa
 
 bool AudioService::PushPcmToPlaybackQueue(std::vector<int16_t>&& pcm_data, bool wait) {
     auto task = std::make_unique<AudioTask>();
-    task->type = kAudioTaskTypeDecodeToPlaybackQueue;
+    task->type = kAudioTaskTypeEncodeToTestingQueue;
     task->pcm = std::move(pcm_data);
-    task->timestamp = esp_timer_get_time() / 1000;
+    // 对直接推送到播放队列的PCM，不应使用server AEC时间戳
+    // 避免从timestamp_queue_读取导致时间戳队列紊乱或空队列访问
+    task->timestamp = 0;
     
     std::unique_lock<std::mutex> lock(audio_queue_mutex_);
     if (audio_playback_queue_.size() >= MAX_PLAYBACK_TASKS_IN_QUEUE) {
@@ -687,29 +697,102 @@ void AudioService::CheckAndUpdateAudioPowerState() {
     }
 }
 
-void AudioService::FeedExternalAudioData(std::vector<int16_t>&& pcm_data) {
-    /* if (!audio_processor_ || !audio_processor_->IsRunning()) {
-        ESP_LOGW(TAG, "AudioProcessor is not running, cannot feed external audio data");
-        return;
-    } */
+void AudioService::FeedExternalAudioData(std::vector<int16_t>&& pcm_data, int sample_rate, uint8_t end_key) {
+    // 根据end_key控制本地音频是否推入队列
+    if (end_key == 0) {
+        local_audio_enabled_ = false;  // 禁止本地音频推入队列
+    } else if (end_key == 1) {
+        local_audio_enabled_ = true;   // 允许本地音频推入队列
+    }
     
-    const size_t feed_size = audio_processor_->GetFeedSize();
-    if (feed_size == 0) {
-        ESP_LOGE(TAG, "AudioProcessor feed size is 0");
+    // 检查音频处理器和唤醒词检测是否运行
+    bool processor_running = audio_processor_ && audio_processor_->IsRunning();
+    bool wake_word_running = wake_word_ && IsWakeWordRunning();
+    
+    if (!processor_running && !wake_word_running) {
+        ESP_LOGW(TAG, "Neither AudioProcessor nor WakeWord is running, cannot feed external audio data");
         return;
     }
     
     std::lock_guard<std::mutex> lock(external_audio_mutex_);
     
+    // 记录接收到的音频数据信息
+    ESP_LOGD(TAG, "Received external audio data: %zu samples, sample_rate: %d Hz", pcm_data.size(), sample_rate);
+    
     // 将新数据添加到缓冲区
     external_audio_buffer_.insert(external_audio_buffer_.end(), pcm_data.begin(), pcm_data.end());
     
-    // 当缓冲区有足够的数据时，提取完整的帧并通过AudioProcessor处理
-    while (external_audio_buffer_.size() >= feed_size) {
-        std::vector<int16_t> frame_data(external_audio_buffer_.begin(), external_audio_buffer_.begin() + feed_size);
-        external_audio_buffer_.erase(external_audio_buffer_.begin(), external_audio_buffer_.begin() + feed_size);
-        
-        // 通过AudioProcessor处理数据，它会自动调用OnOutput回调
-        audio_processor_->Feed(std::move(frame_data));
+    // 获取AudioProcessor和WakeWord需要的数据块大小
+    size_t processor_feed_size = 0;
+    size_t wake_word_feed_size = 0;
+    
+    if (processor_running) {
+        processor_feed_size = audio_processor_->GetFeedSize();
+        if (processor_feed_size == 0) {
+            ESP_LOGE(TAG, "AudioProcessor feed size is 0");
+            processor_running = false;
+        }
     }
+    
+    if (wake_word_running) {
+        wake_word_feed_size = wake_word_->GetFeedSize();
+        if (wake_word_feed_size == 0) {
+            ESP_LOGE(TAG, "WakeWord feed size is 0");
+            wake_word_running = false;
+        }
+    }
+    
+    if (!processor_running && !wake_word_running) {
+        ESP_LOGE(TAG, "Both AudioProcessor and WakeWord have invalid feed sizes");
+        return;
+    }
+    
+    ESP_LOGD(TAG, "External audio buffer size: %zu, processor feed size: %zu, wake_word feed size: %zu", 
+             external_audio_buffer_.size(), processor_feed_size, wake_word_feed_size);
+    
+    // 处理缓冲区中的数据，同时送给AudioProcessor和WakeWord
+    size_t processed_frames = 0;
+    
+    // 使用较小的feed size作为处理单位，确保两个模块都能得到足够的数据
+    size_t min_feed_size = 0;
+    if (processor_running && wake_word_running) {
+        min_feed_size = std::min(processor_feed_size, wake_word_feed_size);
+    } else if (processor_running) {
+        min_feed_size = processor_feed_size;
+    } else if (wake_word_running) { 
+        min_feed_size = wake_word_feed_size;
+    }
+    
+    while (external_audio_buffer_.size() >= min_feed_size) {
+
+        // 为WakeWord处理数据（用于唤醒检测）
+        if (wake_word_running && external_audio_buffer_.size() >= wake_word_feed_size) {
+            std::vector<int16_t> wake_word_data(external_audio_buffer_.begin(),
+                                              external_audio_buffer_.begin() + wake_word_feed_size);
+            // 记录唤醒词输入数据
+            ESP_LOGI(TAG, "Feeding %zu samples to WakeWord", wake_word_data.size());
+            wake_word_->Feed(wake_word_data);
+        }
+
+        // 为AudioProcessor处理数据
+        if (processor_running && external_audio_buffer_.size() >= processor_feed_size) {
+            std::vector<int16_t> processor_data(external_audio_buffer_.begin(), 
+                                              external_audio_buffer_.begin() + processor_feed_size);
+            // 通过AudioProcessor处理数据，它会自动调用OnOutput回调
+            audio_processor_->Feed(std::move(processor_data));
+        }
+        
+        // 从缓冲区移除已处理的数据（使用最小的feed size）
+        external_audio_buffer_.erase(external_audio_buffer_.begin(), 
+                                    external_audio_buffer_.begin() + min_feed_size);
+        processed_frames++;
+    } 
+    
+    if (processed_frames > 0) {
+        ESP_LOGD(TAG, "Processed %zu audio frames, remaining buffer size: %zu", 
+                 processed_frames, external_audio_buffer_.size());
+    }
+    
+    // 更新最后输入时间，与本地音频处理保持一致
+    last_input_time_ = std::chrono::steady_clock::now();
 }

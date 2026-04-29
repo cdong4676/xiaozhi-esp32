@@ -74,10 +74,11 @@
 
 #define ELEGOO_ROBOT_VERSION "1.0.0"
 
+/* 网络通信配置 - 内存优化版本（修复栈溢出） */
 #define NETWORK_TCP_PORT_DEFAULT        8080
 #define NETWORK_UDP_PORT_DEFAULT        8888               
-#define NETWORK_TASK_STACK_SIZE         3072                
-#define UART_TASK_STACK_SIZE            3072                
+#define NETWORK_TASK_STACK_SIZE         2048                
+#define UART_TASK_STACK_SIZE            2048                
 #define NETWORK_TASK_PRIORITY           5                   
 #define UDP_TASK_STACK_SIZE             2048               
 #define UDP_TASK_PRIORITY               3                   

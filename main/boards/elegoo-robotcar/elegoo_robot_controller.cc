@@ -213,21 +213,213 @@ void ElegooRobotController::TcpServerTaskWrapper(void* parameter) {
     static_cast<ElegooRobotController*>(parameter)->TcpServerTask();
 }
 
+/**
+ * @brief 动态调整缓冲区大小
+ * @param buffer 缓冲区指针的引用
+ * @param current_size 当前缓冲区大小的引用
+ * @param peak_usage 峰值使用量的引用
+ * @param buffer_pos 当前缓冲区位置
+ */
+void ElegooRobotController::AdjustBufferSize(uint8_t*& buffer, size_t& current_size, 
+                                           size_t& peak_usage, size_t buffer_pos) {
+    double usage_ratio = (double)peak_usage / current_size;
+    
+    if (usage_ratio > BUFFER_GROW_THRESHOLD && current_size < MAX_BUFFER_SIZE) {
+        // 扩展缓冲区
+        size_t new_size = current_size * 2;
+        if (new_size > MAX_BUFFER_SIZE) new_size = MAX_BUFFER_SIZE;
+        
+        uint8_t* new_buffer = (uint8_t*)heap_caps_realloc(buffer, new_size, MALLOC_CAP_SPIRAM);
+        if (new_buffer != nullptr) {
+            buffer = new_buffer;
+            current_size = new_size;
+            ESP_LOGI(ROBOT_CONTROLLER_TAG, "缓冲区扩展至 %zu bytes", current_size);
+        }
+    } else if (usage_ratio < BUFFER_SHRINK_THRESHOLD && current_size > MIN_BUFFER_SIZE) {
+        // 收缩缓冲区
+        size_t new_size = current_size / 2;
+        if (new_size < MIN_BUFFER_SIZE) new_size = MIN_BUFFER_SIZE;
+        
+        if (buffer_pos <= new_size) {  // 确保当前数据不会丢失
+            uint8_t* new_buffer = (uint8_t*)heap_caps_realloc(buffer, new_size, MALLOC_CAP_SPIRAM);
+            if (new_buffer != nullptr) {
+                buffer = new_buffer;
+                current_size = new_size;
+                ESP_LOGI(ROBOT_CONTROLLER_TAG, "缓冲区收缩至 %zu bytes", current_size);
+            }
+        }
+    }
+    peak_usage = buffer_pos;  // 重置峰值
+}
+
+/**
+ * @brief 处理TCP数据接收
+ * @param buffer 数据缓冲区
+ * @param buffer_pos 缓冲区当前位置的引用
+ * @param current_size 当前缓冲区大小
+ * @param peak_usage 峰值使用量的引用
+ * @return 接收的字节数，-1表示错误，0表示连接关闭
+ */
+int ElegooRobotController::ReceiveTcpData(uint8_t* buffer, size_t& buffer_pos, 
+                                        size_t current_size, size_t& peak_usage) {
+    // 检查缓冲区是否已满，如果满了则重置
+    if (buffer_pos >= current_size * 0.9) {
+        ESP_LOGW(ROBOT_CONTROLLER_TAG, "缓冲区使用率过高，重置缓冲区");
+        buffer_pos = 0;
+        peak_usage = 0;
+    }
+    
+    int len = recv(tcp_client_fd_, buffer + buffer_pos, current_size - buffer_pos, 0);
+    if (len <= 0) {
+        if (len == 0) {
+            ESP_LOGI(ROBOT_CONTROLLER_TAG, "客户端断开连接");
+            return 0;
+        } else {
+            // 检查是否是超时或非阻塞错误
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                ESP_LOGD(ROBOT_CONTROLLER_TAG, "接收超时，继续等待");
+                vTaskDelay(10 / portTICK_PERIOD_MS);  // 短暂延迟
+                return -2;  // 特殊返回值表示超时
+            } else {
+                ESP_LOGE(ROBOT_CONTROLLER_TAG, "接收数据错误: %s (errno=%d)", strerror(errno), errno);
+                return -1;
+            }
+        }
+    }
+    
+    buffer_pos += len;
+    if (buffer_pos > peak_usage) {
+        peak_usage = buffer_pos;  // 更新峰值使用量
+    }
+    ESP_LOGD(ROBOT_CONTROLLER_TAG, "接收到 %d 字节数据，缓冲区总计: %zu 字节", len, buffer_pos);
+    ESP_LOGV(ROBOT_CONTROLLER_TAG, "缓冲区使用率: %.1f%% (峰值: %zu/%zu)", 
+            (double)buffer_pos / current_size * 100, peak_usage, current_size);
+    
+    return len;
+}
+
+/**
+ * @brief 处理协议包解析
+ * @param buffer 数据缓冲区
+ * @param buffer_pos 缓冲区当前位置的引用
+ */
+void ElegooRobotController::ProcessProtocolPackets(uint8_t* buffer, size_t& buffer_pos) {
+    size_t processed = 0;
+    while (processed < buffer_pos) {
+        size_t bytes_consumed = 0;
+        bool parse_result = ParseProtocolPacket(buffer + processed, buffer_pos - processed, bytes_consumed);
+        
+        if (parse_result && bytes_consumed > 0) {
+            // 成功解析了一个包
+            processed += bytes_consumed;
+            ESP_LOGD(ROBOT_CONTROLLER_TAG, "成功解析协议包，消耗 %zu 字节", bytes_consumed);
+        } else if (parse_result && bytes_consumed == 0) {
+            // 这种情况不应该发生，防止无限循环
+            ESP_LOGW(ROBOT_CONTROLLER_TAG, "解析成功但未消耗字节，跳过1字节");
+            processed += 1;
+        } else {
+            // 解析失败，可能是数据不完整或无效数据
+            if (bytes_consumed > 0) {
+                // 跳过无效数据
+                processed += bytes_consumed;
+                ESP_LOGD(ROBOT_CONTROLLER_TAG, "跳过无效数据 %zu 字节", bytes_consumed);
+            } else {
+                // 数据不完整，等待更多数据
+                ESP_LOGD(ROBOT_CONTROLLER_TAG, "数据不完整，等待更多数据");
+                break;
+            }
+        }
+    }
+    
+    // 移动未处理的数据到缓冲区开头
+    if (processed > 0 && processed < buffer_pos) {
+        size_t remaining = buffer_pos - processed;
+        memmove(buffer, buffer + processed, remaining);
+        buffer_pos = remaining;
+        ESP_LOGD(ROBOT_CONTROLLER_TAG, "移动 %zu 字节未处理数据到缓冲区开头", remaining);
+    } else if (processed >= buffer_pos) {
+        // 所有数据都已处理
+        buffer_pos = 0;
+    }
+}
+
+/**
+ * @brief 配置客户端socket
+ * @param client_fd 客户端socket文件描述符
+ * @return 配置是否成功
+ */
+bool ElegooRobotController::ConfigureClientSocket(int client_fd) {
+    // 设置socket接收超时
+    struct timeval timeout;
+    timeout.tv_sec = 5;  // 5秒超时
+    timeout.tv_usec = 0;
+    if (setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+        ESP_LOGW(ROBOT_CONTROLLER_TAG, "设置socket超时失败: %s", strerror(errno));
+        return false;
+    }
+    return true;
+}
+
+/**
+ * @brief 处理客户端连接
+ * @param client_fd 客户端socket文件描述符
+ * @param buffer 数据缓冲区
+ * @param current_size 当前缓冲区大小的引用
+ * @param buffer_pos 缓冲区当前位置的引用
+ * @param peak_usage 峰值使用量的引用
+ * @param resize_counter 调整检查计数器的引用
+ */
+void ElegooRobotController::HandleClientConnection(int client_fd, uint8_t*& buffer, 
+                                                 size_t& current_size, size_t& buffer_pos, 
+                                                 size_t& peak_usage, uint32_t& resize_counter) {
+    ConfigureClientSocket(client_fd);
+    StopUdpBroadcastTask();
+    buffer_pos = 0;  // 重置缓冲区位置
+
+    // 处理客户端消息
+    while (network_running_) {
+        // 动态调整缓冲区大小
+        if (++resize_counter % 50 == 0) {  // 每50次检查一次
+            AdjustBufferSize(buffer, current_size, peak_usage, buffer_pos);
+        }
+        
+        int recv_result = ReceiveTcpData(buffer, buffer_pos, current_size, peak_usage);
+        if (recv_result == 0) {
+            // 客户端断开连接
+            break;
+        } else if (recv_result == -1) {
+            // 接收错误
+            break;
+        } else if (recv_result == -2) {
+            // 超时，继续循环
+            continue;
+        }
+        
+        // 处理接收到的数据
+        ProcessProtocolPackets(buffer, buffer_pos);
+    }
+    
+    // 客户端断开连接时停止视频流
+    StopVideoStream();
+}
+
 void ElegooRobotController::TcpServerTask() {
     struct sockaddr_in client_addr;
     socklen_t client_addr_len = sizeof(client_addr);
     
-    // 固定大小缓冲区
-    const size_t buffer_size = 2048;  // 2KB固定缓冲区
-    uint8_t* buffer = (uint8_t*)heap_caps_malloc(buffer_size, MALLOC_CAP_SPIRAM);
+    // 动态缓冲区管理
+    size_t current_buffer_size = MIN_BUFFER_SIZE;
+    uint8_t* buffer = (uint8_t*)heap_caps_malloc(current_buffer_size, MALLOC_CAP_SPIRAM);
     if (buffer == nullptr) {
         ESP_LOGE(ROBOT_CONTROLLER_TAG, "TCP任务中分配缓冲区内存失败，任务退出");
         vTaskDelete(NULL);
         return;
     }
     size_t buffer_pos = 0;  // 缓冲区当前位置
+    size_t peak_usage = 0;  // 峰值使用量
+    uint32_t resize_check_counter = 0;  // 调整检查计数器
 
-    ESP_LOGI(ROBOT_CONTROLLER_TAG, "TCP服务器任务开始运行");
+    ESP_LOGD(ROBOT_CONTROLLER_TAG, "TCP服务器任务开始运行");
 
     while (network_running_) {
         tcp_client_fd_ = accept(tcp_socket_fd_, (struct sockaddr*)&client_addr, &client_addr_len);
@@ -236,87 +428,8 @@ void ElegooRobotController::TcpServerTask() {
             inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, sizeof(client_ip));
             ESP_LOGI(ROBOT_CONTROLLER_TAG, "客户端连接: %s:%d", client_ip, ntohs(client_addr.sin_port));
 
-            // 设置socket接收超时
-            struct timeval timeout;
-            timeout.tv_sec = 5;  // 5秒超时
-            timeout.tv_usec = 0;
-            if (setsockopt(tcp_client_fd_, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
-                ESP_LOGW(ROBOT_CONTROLLER_TAG, "设置socket超时失败: %s", strerror(errno));
-            }
-
-            StopUdpBroadcastTask();
-            buffer_pos = 0;  // 重置缓冲区位置
-
-            // 处理客户端消息
-            while (network_running_) {
-                // 检查缓冲区是否已满，如果满了则重置
-                if (buffer_pos >= buffer_size * 0.9) {
-                    ESP_LOGW(ROBOT_CONTROLLER_TAG, "缓冲区使用率过高，重置缓冲区");
-                    buffer_pos = 0;
-                }
-                
-                int len = recv(tcp_client_fd_, buffer + buffer_pos, buffer_size - buffer_pos, 0);
-                if (len <= 0) {
-                    if (len == 0) {
-                        ESP_LOGI(ROBOT_CONTROLLER_TAG, "客户端断开连接");
-                        break;
-                    } else {
-                        // 检查是否是超时或非阻塞错误
-                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                            vTaskDelay(10 / portTICK_PERIOD_MS);  // 短暂延迟后继续
-                            continue;
-                        } else {
-                            ESP_LOGE(ROBOT_CONTROLLER_TAG, "接收数据错误: %s", strerror(errno));
-                            break;
-                        }
-                    }
-                }
-                
-                buffer_pos += len;
-                // 移除详细的数据接收日志
-                
-                // 尝试解析协议包
-                size_t processed = 0;
-                while (processed < buffer_pos) {
-                    size_t bytes_consumed = 0;
-                    bool parse_result = ParseProtocolPacket(buffer + processed, buffer_pos - processed, bytes_consumed);
-                    
-                    if (parse_result && bytes_consumed > 0) {
-                        // 成功解析了一个包
-                        processed += bytes_consumed;
-                        // 协议包解析成功
-                    } else if (parse_result && bytes_consumed == 0) {
-                        // 这种情况不应该发生，防止无限循环
-                        ESP_LOGW(ROBOT_CONTROLLER_TAG, "解析成功但未消耗字节，跳过1字节");
-                        processed += 1;
-                    } else {
-                        // 解析失败，可能是数据不完整或无效数据
-                        if (bytes_consumed > 0) {
-                            // 跳过无效数据
-                            processed += bytes_consumed;
-                            // 跳过无效数据
-                        } else {
-                            // 数据不完整，等待更多数据
-                            // 数据不完整，等待更多数据
-                            break;
-                        }
-                    }
-                }
-                
-                // 移动未处理的数据到缓冲区开头
-                if (processed > 0 && processed < buffer_pos) {
-                    size_t remaining = buffer_pos - processed;
-                    memmove(buffer, buffer + processed, remaining);
-                    buffer_pos = remaining;
-                    ESP_LOGD(ROBOT_CONTROLLER_TAG, "移动 %zu 字节未处理数据到缓冲区开头", remaining);
-                } else if (processed >= buffer_pos) {
-                    // 所有数据都已处理
-                    buffer_pos = 0;
-                }
-            }
-            
-            // 客户端断开连接时停止视频流
-            StopVideoStream();
+            HandleClientConnection(tcp_client_fd_, buffer, current_buffer_size, 
+                                 buffer_pos, peak_usage, resize_check_counter);
             
             close(tcp_client_fd_);
             tcp_client_fd_ = -1;
@@ -326,7 +439,7 @@ void ElegooRobotController::TcpServerTask() {
                 StartUdpBroadcastTask();
             }
         }
-        
+         
         vTaskDelay(UART_READ_TIMEOUT_MS / portTICK_PERIOD_MS);
     }
 
@@ -354,7 +467,7 @@ void ElegooRobotController::UdpBroadcastTask() {
         vTaskDelete(NULL);
         return;
     }
-
+    // 设置广播地址
     struct sockaddr_in broadcast_addr;
     broadcast_addr.sin_family = AF_INET;
     broadcast_addr.sin_port = htons(udp_port_);
@@ -490,51 +603,74 @@ void ElegooRobotController::SendRawBytes(const uint8_t* data, size_t length) {
 }
 
 
-/// @brief 执行待机命令
+/**
+ * @brief 执行待机命令
+ * @details 发送待机模式命令到机器人，使机器人进入待机状态
+ * @note 待机模式下机器人停止所有运动，等待新的指令
+ */
 void ElegooRobotController::ExecuteStandby() {
-    
     uint8_t command_id[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
     
     // 构建模式命令数据包: Command ID (6字节) + Type (1字节) + Mode (1字节)
     uint8_t command_data[8];
     memcpy(command_data, command_id, 6);
-    command_data[6] = EXECUTE_MODE;
+    command_data[6] = static_cast<uint8_t>(BinaryCommandType::MODE_CONTROL);
     command_data[7] = 0x00; // 待机模式
     
-    SendProtocolPacket(PROTOCOL_TYPE_COMMAND, command_data, sizeof(command_data));
+    SendProtocolPacket(ProtocolType::COMMAND, command_data, sizeof(command_data));
     ESP_LOGI(ROBOT_CONTROLLER_TAG, "发送待机命令");
 }
 
-/// @brief 移动命令
-/// @param dir_index 移动方向索引,0:停止,1:前进,2:后退,3:左转,4:右转,5:左前,6:右前,7:左后,8:右后
-/// @param speed 移动速度 0-255
+/**
+ * @brief 执行机器人移动命令
+ * @details 控制机器人按指定方向和速度移动
+ * @param dir_index 移动方向索引
+ *                  - 0: 停止
+ *                  - 1: 前进
+ *                  - 2: 后退
+ *                  - 3: 左转
+ *                  - 4: 右转
+ *                  - 5: 左前
+ *                  - 6: 右前
+ *                  - 7: 左后
+ *                  - 8: 右后
+ * @param speed 移动速度，范围 0-255，0为停止，255为最大速度
+ * @note 速度值会被限制在有效范围内
+ */
 void ElegooRobotController::ExecuteMoveCommand(int dir_index, int speed) {
-    
     uint8_t command_id[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
     
     // 构建移动命令数据包: Command ID (6字节) + Type (1字节) + Dir (1字节) + Speed (1字节)
     uint8_t command_data[9];
     memcpy(command_data, command_id, 6);
-    command_data[6] = EXECUTE_MOVE;
+    command_data[6] = static_cast<uint8_t>(BinaryCommandType::MOVE_CONTROL);
     command_data[7] = static_cast<uint8_t>(dir_index);
     command_data[8] = static_cast<uint8_t>(speed);
     
-    SendProtocolPacket(PROTOCOL_TYPE_COMMAND, command_data, sizeof(command_data));
+    SendProtocolPacket(ProtocolType::COMMAND, command_data, sizeof(command_data));
     ESP_LOGI(ROBOT_CONTROLLER_TAG, "发送移动命令: 方向=%d, 速度=%d", dir_index, speed);
 }
 
-/// @brief 执行模式改变命令
-/// @param mode_index 模式索引,0=待机,1=避障,2=循迹,3=跟随
+/**
+ * @brief 执行机器人模式改变命令
+ * @details 切换机器人的工作模式
+ * @param mode_index 模式索引
+ *                   - 0: 待机模式 - 机器人停止所有动作
+ *                   - 1: 避障模式 - 自动避开障碍物
+ *                   - 2: 循迹模式 - 沿着线路行驶
+ *                   - 3: 跟随模式 - 跟随目标移动
+ * @note 模式切换会立即生效，当前动作会被中断
+ */
 void ElegooRobotController::ExecuteModeChangeCommand(int mode_index) {
     uint8_t command_id[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
     
     // 构建模式命令数据包: Command ID (6字节) + Type (1字节) + Mode (1字节)
     uint8_t command_data[8];
     memcpy(command_data, command_id, 6);
-    command_data[6] = EXECUTE_MODE;
-    command_data[7] = static_cast<uint8_t>(mode_index);
+    command_data[6] = static_cast<uint8_t>(BinaryCommandType::MODE_CONTROL);
+    command_data[7] = mode_index;
     
-    SendProtocolPacket(PROTOCOL_TYPE_COMMAND, command_data, sizeof(command_data));
+    SendProtocolPacket(ProtocolType::COMMAND, command_data, sizeof(command_data));
     ESP_LOGI(ROBOT_CONTROLLER_TAG, "发送模式改变命令: 模式=%d", mode_index);
 }
 
@@ -548,12 +684,12 @@ void ElegooRobotController::ExecuteMotorControl(int motor, int speed, int direct
     // 构建电机控制命令数据包: Command ID (6字节) + Type (1字节) + Motor (1字节) + Dir (1字节) + Speed (1字节)
     uint8_t command_data[10];
     memcpy(command_data, command_id, 6);
-    command_data[6] = EXECUTE_MOTOR_CONTROL;
+    command_data[6] = static_cast<uint8_t>(BinaryCommandType::MOTOR_CONTROL);
     command_data[7] = static_cast<uint8_t>(motor);
     command_data[8] = static_cast<uint8_t>(direction);
     command_data[9] = static_cast<uint8_t>(speed);
     
-    SendProtocolPacket(PROTOCOL_TYPE_COMMAND, command_data, sizeof(command_data));
+    SendProtocolPacket(ProtocolType::COMMAND, command_data, sizeof(command_data));
     ESP_LOGI(ROBOT_CONTROLLER_TAG, "发送电机控制命令: 电机=%d, 方向=%d, 速度=%d", motor, direction, speed);
 }
 
@@ -572,12 +708,12 @@ void ElegooRobotController::ExecuteServoControl(int degree) {
     // 构建舵机控制命令数据包: Command ID (6字节) + Type (1字节) + Servo (1字节) + Angle (2字节)
     uint8_t command_data[10];
     memcpy(command_data, command_id, 6);
-    command_data[6] = EXECUTE_CHANGE_SERVO;
+    command_data[6] = static_cast<uint8_t>(BinaryCommandType::SERVO_CONTROL);
     command_data[7] = 1;    // 舵机编号1
     uint16_t angle = static_cast<uint16_t>(degree);
     memcpy(&command_data[8], &angle, 2); // 小端序存储角度
     
-    SendProtocolPacket(PROTOCOL_TYPE_COMMAND, command_data, sizeof(command_data));
+    SendProtocolPacket(ProtocolType::COMMAND, command_data, sizeof(command_data));
     ESP_LOGI(ROBOT_CONTROLLER_TAG, "发送舵机控制命令: 角度=%d", degree);
 }
 
@@ -589,10 +725,10 @@ void ElegooRobotController::ExecuteSensorRead(int sensor_type) {
     // 构建传感器读取命令数据包: Command ID (6字节) + Type (1字节) + Sensor (1字节)
     uint8_t command_data[8];
     memcpy(command_data, command_id, 6);
-    command_data[6] = EXECUTE_SENSING_DATA;
-    command_data[7] = static_cast<uint8_t>(sensor_type);
+    command_data[6] = static_cast<uint8_t>(BinaryCommandType::SENSOR_DATA);
+    command_data[7] = sensor_type;
     
-    SendProtocolPacket(PROTOCOL_TYPE_COMMAND, command_data, sizeof(command_data));
+    SendProtocolPacket(ProtocolType::COMMAND, command_data, sizeof(command_data));
     ESP_LOGI(ROBOT_CONTROLLER_TAG, "发送传感器读取命令: 传感器类型=%d", sensor_type);
 }
 
@@ -653,7 +789,7 @@ bool ElegooRobotController::StartVideoStream() {
     
     // 创建视频流任务
     if (xTaskCreate(VideoStreamTaskWrapper, "video_stream_task", 4096, 
-                   this, 4, &video_stream_task_handle_) != pdPASS) {
+                   this, 2, &video_stream_task_handle_) != pdPASS) {
         ESP_LOGE(ROBOT_CONTROLLER_TAG, "视频流任务创建失败");
         video_streaming_ = false;
         return false;
@@ -678,7 +814,7 @@ bool ElegooRobotController::StopVideoStream() {
     ESP_LOGI(ROBOT_CONTROLLER_TAG, "视频流已停止");
     return true;
 }
-
+// 社区
 void ElegooRobotController::VideoStreamTaskWrapper(void* parameter) {
     static_cast<ElegooRobotController*>(parameter)->VideoStreamTask();
 }
@@ -762,7 +898,7 @@ bool ElegooRobotController::SendVideoFrame(const uint8_t* frame_data, uint32_t f
     memcpy(video_data + offset, frame_data, frame_size);
 
     // 发送协议包
-    bool result = SendProtocolPacket(PROTOCOL_TYPE_VIDEO_COMMAND, video_data, total_data_size);
+    bool result = SendProtocolPacket(ProtocolType::VIDEO_COMMAND, video_data, total_data_size);
     
     free(video_data);
     return result;
@@ -868,7 +1004,7 @@ bool ElegooRobotController::ParseProtocolPacket(const uint8_t* buffer, size_t bu
 
 void ElegooRobotController::ProcessProtocolPacket(ProtocolType type, const uint8_t* data, uint32_t data_length, const uint8_t* original_packet, size_t packet_size) {
     switch (type) {
-        case PROTOCOL_TYPE_COMMAND:
+        case ProtocolType::COMMAND:
             ESP_LOGI(ROBOT_CONTROLLER_TAG, "处理命令数据，长度: %u", (unsigned int)data_length);
             if (original_packet && packet_size > 0) {
                 // 直接转发原始完整协议包到串口
@@ -876,7 +1012,7 @@ void ElegooRobotController::ProcessProtocolPacket(ProtocolType type, const uint8
             }
             break;
             
-        case PROTOCOL_TYPE_VOICE:
+        case ProtocolType::VOICE:
             {
                 ESP_LOGI(ROBOT_CONTROLLER_TAG, "收到语音数据，长度: %u，发送到小智服务器解析", (unsigned int)data_length);
                 
@@ -884,11 +1020,11 @@ void ElegooRobotController::ProcessProtocolPacket(ProtocolType type, const uint8
                 break;
             }
             
-        case PROTOCOL_TYPE_HEARTBEAT:
+        case ProtocolType::HEARTBEAT:
             ESP_LOGD(ROBOT_CONTROLLER_TAG, "收到心跳包");
             break;
             
-        case PROTOCOL_TYPE_VIDEO_COMMAND:
+        case ProtocolType::VIDEO_COMMAND:
             ESP_LOGD(ROBOT_CONTROLLER_TAG, "收到视频帧数据，长度: %u", (unsigned int)data_length);
             // 这里收到的是控制命令，控制开始或结束发送视频帧
             if (data_length > 0 && data != nullptr) {
@@ -902,7 +1038,7 @@ void ElegooRobotController::ProcessProtocolPacket(ProtocolType type, const uint8
             }
             break;
             
-        case PROTOCOL_TYPE_STATUS:
+        case ProtocolType::STATUS:
             ESP_LOGI(ROBOT_CONTROLLER_TAG, "收到状态数据，长度: %u", (unsigned int)data_length);
             // 状态数据处理
             break;

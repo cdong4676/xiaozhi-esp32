@@ -3,7 +3,7 @@
 #include <libs/gif/lv_gif.h>
 
 #include "display/lcd_display.h"
-#include "otto_emoji_gif.h"
+
 
 /**
  * @brief Otto机器人GIF表情显示类
@@ -44,7 +44,7 @@ private:
     // 表情映射
     struct EmotionMap {
         const char* name;
-        const lv_img_dsc_t* gif;
+        const char* gif_path;
     };
 
     static const EmotionMap emotion_maps_[];

@@ -45,6 +45,56 @@ Elegoo Robot Car 是一个基于 ESP32 的智能机器车项目，集成了小�
 - 语音合成
 - 小智AI对话
 
+## 代码结构优化
+
+### 优化内容
+本项目经过了全面的代码结构优化，提高了代码的可读性和维护性：
+
+#### 1. 头文件重构
+- 使用 `enum class` 替代传统枚举，提供更好的类型安全
+- 添加详细的 Doxygen 风格注释
+- 重新组织包含文件和类声明结构
+
+#### 2. 函数模块化
+- 将大型函数拆分为更小的功能单元
+- `TcpServerTask` 被拆分为多个专门的辅助函数：
+  - `AdjustBufferSize()` - 动态缓冲区管理
+  - `ReceiveTcpData()` - TCP数据接收
+  - `ProcessProtocolPackets()` - 协议包解析
+  - `ConfigureClientSocket()` - 客户端socket配置
+  - `HandleClientConnection()` - 客户端连接处理
+
+#### 3. 注释改善
+- 使用标准化的文档注释格式
+- 详细说明函数参数和返回值
+- 添加使用示例和注意事项
+
+#### 4. 协议类型重构
+```cpp
+// 新的协议类型定义
+enum class ProtocolType : uint8_t {
+    COMMAND = 0x01,      ///< 控制命令
+    VIDEO_COMMAND = 0x02, ///< 视频命令  
+    VOICE = 0x03,        ///< 语音数据
+    HEARTBEAT = 0x04,    ///< 心跳包
+    STATUS = 0x05        ///< 状态信息
+};
+
+enum class BinaryCommandType : uint8_t {
+    MODE_CONTROL = 0x01,   ///< 模式控制
+    MOVE_CONTROL = 0x02,   ///< 移动控制
+    MOTOR_CONTROL = 0x03,  ///< 电机控制
+    SERVO_CONTROL = 0x04,  ///< 舵机控制
+    SENSOR_DATA = 0x05     ///< 传感器数据
+};
+```
+
+### 设计原则
+- **单一职责原则**: 每个函数专注于单一功能
+- **模块化设计**: 网络、控制、视频流功能分离
+- **错误处理**: 完善的错误检查和日志记录
+- **内存管理**: 动态缓冲区和资源自动管理
+
 ## MCP工具接口
 
 ### 底盘控制工具

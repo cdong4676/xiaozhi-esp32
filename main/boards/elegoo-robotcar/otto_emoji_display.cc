@@ -14,37 +14,37 @@
 // 表情映射表 - 将原版21种表情映射到现有6个GIF
 const OttoEmojiDisplay::EmotionMap OttoEmojiDisplay::emotion_maps_[] = {
     // 中性/平静类表情 -> staticstate
-    {"neutral", &staticstate},
-    {"relaxed", &staticstate},
-    {"sleepy", &staticstate},
+    {"neutral", "gifs/staticstate.gif"},
+    {"relaxed", "gifs/staticstate.gif"},
+    {"sleepy", "gifs/staticstate.gif"},
 
     // 积极/开心类表情 -> happy
-    {"happy", &happy},
-    {"laughing", &happy},
-    {"funny", &happy},
-    {"loving", &happy},
-    {"confident", &happy},
-    {"winking", &happy},
-    {"cool", &happy},
-    {"delicious", &happy},
-    {"kissy", &happy},
-    {"silly", &happy},
+    {"happy", "gifs/happy.gif"},
+    {"laughing", "gifs/happy.gif"},
+    {"funny", "gifs/happy.gif"},
+    {"loving", "gifs/happy.gif"},
+    {"confident", "gifs/happy.gif"},
+    {"winking", "gifs/happy.gif"},
+    {"cool", "gifs/happy.gif"},
+    {"delicious", "gifs/happy.gif"},
+    {"kissy", "gifs/happy.gif"},
+    {"silly", "gifs/happy.gif"},
 
     // 悲伤类表情 -> sad
-    {"sad", &sad},
-    {"crying", &sad},
+    {"sad", "gifs/sad.gif"},
+    {"crying", "gifs/sad.gif"},
 
     // 愤怒类表情 -> anger
-    {"angry", &anger},
+    {"angry", "gifs/anger.gif"},
 
     // 惊讶类表情 -> scare
-    {"surprised", &scare},
-    {"shocked", &scare},
+    {"surprised", "gifs/scare.gif"},
+    {"shocked", "gifs/scare.gif"},
 
     // 思考/困惑类表情 -> buxue
-    {"thinking", &buxue},
-    {"confused", &buxue},
-    {"embarrassed", &buxue},
+    {"thinking", "gifs/buxue.gif"},
+    {"confused", "gifs/buxue.gif"},
+    {"embarrassed", "gifs/buxue.gif"},
 
     {nullptr, nullptr}  // 结束标记
 };
@@ -119,7 +119,7 @@ void OttoEmojiDisplay::SetupGifContainer() {
     lv_obj_set_style_border_width(emotion_gif_, 0, 0);
     lv_obj_set_style_bg_opa(emotion_gif_, LV_OPA_TRANSP, 0);
     lv_obj_center(emotion_gif_);
-    lv_gif_set_src(emotion_gif_, &staticstate);
+    lv_gif_set_src(emotion_gif_, "gifs/staticstate.gif");
 
     // 创建图片预览组件
     preview_image_obj_ = lv_image_create(content_);
@@ -154,13 +154,13 @@ void OttoEmojiDisplay::SetEmotion(const char* emotion) {
     DisplayLockGuard lock(this);
     for (const auto& map : emotion_maps_) {
         if (map.name && strcmp(map.name, emotion) == 0) {
-            lv_gif_set_src(emotion_gif_, map.gif);
+            lv_gif_set_src(emotion_gif_, map.gif_path);
             ESP_LOGI(TAG, "设置表情: %s", emotion);
             return;
         }
     }
 
-    lv_gif_set_src(emotion_gif_, &staticstate);
+    lv_gif_set_src(emotion_gif_, "gifs/staticstate.gif");
     ESP_LOGI(TAG, "未知表情'%s'，使用默认", emotion);
 }
 

@@ -108,7 +108,7 @@ public:
     void ResetDecoder();
     
     // 添加公开方法来处理外部音频数据
-    void FeedExternalAudioData(std::vector<int16_t>&& pcm_data);
+    void FeedExternalAudioData(std::vector<int16_t>&& pcm_data, int sample_rate = 16000, uint8_t end_key = 0);
     
     // 添加公开方法直接推送PCM数据到播放队列
     bool PushPcmToPlaybackQueue(std::vector<int16_t>&& pcm_data, bool wait = false);
@@ -151,6 +151,7 @@ private:
     bool voice_detected_ = false;
     bool service_stopped_ = true;
     bool audio_input_need_warmup_ = false;
+    bool local_audio_enabled_ = true;  // 控制本地音频是否推入队列
 
     esp_timer_handle_t audio_power_timer_ = nullptr;
     std::chrono::steady_clock::time_point last_input_time_;

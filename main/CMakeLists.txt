@@ -307,8 +307,12 @@ if(CONFIG_IDF_TARGET_ESP32)
                              )
 endif()
 
+# 获取otto-emoji-gif组件中的GIF文件
+idf_component_get_property(OTTO_EMOJI_GIF_PATH txp666__otto-emoji-gif-component COMPONENT_DIR)
+file(GLOB OTTO_EMOJI_GIFS ${OTTO_EMOJI_GIF_PATH}/gifs/*.gif)
+
 idf_component_register(SRCS ${SOURCES}
-                    EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS}
+                    EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS} ${OTTO_EMOJI_GIFS}
                     INCLUDE_DIRS ${INCLUDE_DIRS}
                     WHOLE_ARCHIVE
                     )
