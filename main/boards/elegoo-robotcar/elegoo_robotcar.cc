@@ -3,9 +3,10 @@
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_panel_vendor.h>
 #include <esp_log.h>
-#include <wifi_station.h>
-#include <esp_wifi.h>
-#include <esp_event.h>
+
+#include <algorithm>
+#include <stdexcept>
+#include <string>
 
 #include "codecs/no_audio_codec.h"
 #include "application.h"
@@ -13,7 +14,6 @@
 #include "config.h"
 #include "display/lcd_display.h"
 #include "otto_emoji_display.h"
-#include "system_reset.h"
 #include "wifi_board.h"
 #include "camera_manager.h"
 #include "mcp_server.h"
@@ -21,37 +21,17 @@
 
 #define TAG "ElegooRobotCar"
 
-LV_FONT_DECLARE(font_puhui_16_4);
-LV_FONT_DECLARE(font_awesome_16_4);
-
 class ElegooRobotCar : public WifiBoard {
 private:
     // 核心组件
-    LcdDisplay* display_;
+    LcdDisplay* display_ = nullptr;
     Button boot_button_;
-    ElegooRobotController* robot_controller_;
-    CameraManager* camera_manager_;
+    ElegooRobotController* robot_controller_ = nullptr;
+    CameraManager* camera_manager_ = nullptr;
     
-    // 状态标志
-    bool web_server_initialized_;
-
-    // WiFi事件处理器
-    static void wifi_event_handler(void* arg, esp_event_base_t event_base,
-                                 int32_t event_id, void* event_data) {
-        if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
-            auto* instance = static_cast<ElegooRobotCar*>(arg);
-            instance->OnWifiConnected();
-        }
-    }
-
-    // WiFi连接成功后的处理
+    // WiFi connection handling
     void OnWifiConnected() {
-        ESP_LOGI(TAG, "WiFi连接成功，初始化服务器");
-        
-        if (!web_server_initialized_) {
-            //elegoo_web_server_init_with_camera(camera_manager_);
-        }
-
+        ESP_LOGI(TAG, "WiFi connected, starting robot control service");
         if (robot_controller_) {
             robot_controller_->StartNetworkServerWhenReady();
         }
@@ -68,18 +48,21 @@ private:
     // 服务初始化方法  
     void InitializeServices() {
         InitializeTools();
-        InitializeWebServer();
+        SetNetworkEventCallback([this](NetworkEvent event, const std::string&) {
+            if (event == NetworkEvent::Connected) {
+                OnWifiConnected();
+            }
+        });
     }
 
     void InitializeSpi() {
-        spi_bus_config_t buscfg = {
-            .mosi_io_num = DISPLAY_MOSI_PIN,
-            .miso_io_num = GPIO_NUM_NC,
-            .sclk_io_num = DISPLAY_CLK_PIN,
-            .quadwp_io_num = GPIO_NUM_NC,
-            .quadhd_io_num = GPIO_NUM_NC,
-            .max_transfer_sz = DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(uint16_t)
-        };
+        spi_bus_config_t buscfg = {};
+        buscfg.mosi_io_num = DISPLAY_MOSI_PIN;
+        buscfg.miso_io_num = GPIO_NUM_NC;
+        buscfg.sclk_io_num = DISPLAY_CLK_PIN;
+        buscfg.quadwp_io_num = GPIO_NUM_NC;
+        buscfg.quadhd_io_num = GPIO_NUM_NC;
+        buscfg.max_transfer_sz = DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(uint16_t);
         ESP_ERROR_CHECK(spi_bus_initialize(SPI3_HOST, &buscfg, SPI_DMA_CH_AUTO));
     }
 
@@ -88,23 +71,21 @@ private:
         esp_lcd_panel_handle_t panel = nullptr;
 
         // 配置SPI接口
-        esp_lcd_panel_io_spi_config_t io_config = {
-            .cs_gpio_num = DISPLAY_CS_PIN,
-            .dc_gpio_num = DISPLAY_DC_PIN,
-            .spi_mode = 0,
-            .pclk_hz = CAMERA_PCLK_HZ,
-            .trans_queue_depth = 10,
-            .lcd_cmd_bits = 8,
-            .lcd_param_bits = 8
-        };
+        esp_lcd_panel_io_spi_config_t io_config = {};
+        io_config.cs_gpio_num = DISPLAY_CS_PIN;
+        io_config.dc_gpio_num = DISPLAY_DC_PIN;
+        io_config.spi_mode = DISPLAY_SPI_MODE;
+        io_config.pclk_hz = DISPLAY_PCLK_HZ;
+        io_config.trans_queue_depth = 10;
+        io_config.lcd_cmd_bits = 8;
+        io_config.lcd_param_bits = 8;
         ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(SPI3_HOST, &io_config, &panel_io));
 
         // 配置LCD面板
-        esp_lcd_panel_dev_config_t panel_config = {
-            .reset_gpio_num = DISPLAY_RST_PIN,
-            .rgb_ele_order = DISPLAY_RGB_ORDER,
-            .bits_per_pixel = 16
-        };
+        esp_lcd_panel_dev_config_t panel_config = {};
+        panel_config.reset_gpio_num = DISPLAY_RST_PIN;
+        panel_config.rgb_ele_order = DISPLAY_RGB_ORDER;
+        panel_config.bits_per_pixel = 16;
         ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(panel_io, &panel_config, &panel));
 
         // 初始化面板
@@ -119,20 +100,15 @@ private:
         display_ = new OttoEmojiDisplay(
             panel_io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT, 
             DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
-            DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY,
-            {
-                .text_font = &font_puhui_16_4,
-                .icon_font = &font_awesome_16_4,
-                .emoji_font = DISPLAY_HEIGHT >= 240 ? font_emoji_64_init() : font_emoji_32_init(),
-            });
+            DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
     }
 
     void InitializeButtons() {
         boot_button_.OnClick([this]() {
             auto& app = Application::GetInstance();
-            if (app.GetDeviceState() == kDeviceStateStarting &&
-                !WifiStation::GetInstance().IsConnected()) {
-                ResetWifiConfiguration();
+            if (app.GetDeviceState() == kDeviceStateStarting) {
+                EnterWifiConfigMode();
+                return;
             }
             app.ToggleChatState();
         });
@@ -203,11 +179,6 @@ private:
         } else {
             ESP_LOGI(TAG, "摄像头初始化成功");
         }
-    }
-
-    void InitializeWebServer() {
-        ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_CONNECTED,
-                                                 &wifi_event_handler, this));
     }
 
     void InitializeTools() {
@@ -384,7 +355,7 @@ private:
     }
 
 public:
-    ElegooRobotCar() : boot_button_(BOOT_BUTTON_GPIO), camera_manager_(nullptr), web_server_initialized_(false) {
+    ElegooRobotCar() : boot_button_(BOOT_BUTTON_GPIO) {
         InitializeHardware();
         InitializeServices();
         GetBacklight()->RestoreBrightness();

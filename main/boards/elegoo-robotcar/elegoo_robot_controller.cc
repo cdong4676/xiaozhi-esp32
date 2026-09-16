@@ -2,9 +2,7 @@
 #include <cstring>
 #include <arpa/inet.h>
 #include <esp_timer.h>
-#include "application.h"
-#include "protocol.h"
-#include "audio/audio_service.h"
+#include "board.h"
 
 ElegooRobotController::ElegooRobotController() 
     : uart_port_(UART_NUM_MAX), buffer_size_(0), initialized_(false),
@@ -1078,19 +1076,17 @@ void ElegooRobotController::SendVoiceDataToServer(const uint8_t* voice_data, uin
     // 创建PCM数据向量
     std::vector<int16_t> pcm_data(pcm_input, pcm_input + total_samples);
     
-    auto& app = Application::GetInstance();
-    auto& audio_service = app.GetAudioService();
-    
-    // 注释掉原来推送到编码队列的代码
-    // 这个方法会将PCM数据推送到编码队列，然后由OpusCodecTask进行编码
-    // audio_service.FeedExternalAudioData(std::move(pcm_data));
-    
-    // 改为播放接收到的音频：直接推送PCM数据到播放队列
-    if (audio_service.PushPcmToPlaybackQueue(std::move(pcm_data), false)) {
-        ESP_LOGD(ROBOT_CONTROLLER_TAG, "已将%zu字节PCM音频数据推送到播放队列", data_length);
-    } else {
-        ESP_LOGW(ROBOT_CONTROLLER_TAG, "推送PCM音频数据到播放队列失败");
+    auto* codec = Board::GetInstance().GetAudioCodec();
+    if (codec == nullptr) {
+        ESP_LOGW(ROBOT_CONTROLLER_TAG, "Audio codec is not available");
+        return;
     }
+
+    if (!codec->output_enabled()) {
+        codec->EnableOutput(true);
+    }
+    codec->OutputData(pcm_data);
+    ESP_LOGD(ROBOT_CONTROLLER_TAG, "Played %zu bytes of PCM audio", data_length);
 }
 
 // 网络发送任务包装器

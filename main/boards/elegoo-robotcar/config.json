@@ -1,9 +1,12 @@
 {
+    "type": "elegoo-robotcar",
     "target": "esp32s3",
     "builds": [
         {
             "name": "elegoo-robotcar",
             "sdkconfig_append": [
+                "CONFIG_CAMERA_OV3660=y",
+                "CONFIG_CAMERA_OV3660_AUTO_DETECT_DVP_INTERFACE_SENSOR=y"
             ]
         }
     ]

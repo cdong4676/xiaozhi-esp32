@@ -96,8 +96,8 @@
 #define WEB_SERVER_INIT_RETRY_DELAY_MS  2000                // Web服务器初始化重试延迟
 
 
-// 摄像头配置
-#define CAMERA_PCLK_HZ                  (20 * 1000 * 1000)
+// LCD SPI clock
+#define DISPLAY_PCLK_HZ                 (20 * 1000 * 1000)
 
 
 

@@ -1,23 +1,21 @@
 #include "camera_manager.h"
-#include "mcp_server.h"
 #include "display.h"
+#include "display/lcd_display.h"
+#include "display/lvgl_display/lvgl_image.h"
 #include "board.h"
 #include "system_info.h"
 
 #include <esp_log.h>
 #include <esp_heap_caps.h>
 #include <img_converters.h>
-#include <cstring>
 #include <esp_timer.h>
-#include <thread>
 
 #define TAG "CameraManager"
 
 CameraManager::CameraManager() 
-    : initialized_(false), streaming_enabled_(false), frames_captured_(0), frames_dropped_(0), last_frame_time_(0) {
+    : initialized_(false), streaming_enabled_(false), frames_captured_(0), last_frame_time_(0) {
     // 构造函数只初始化基本成员变量
     fb_ = nullptr;
-    memset(&preview_image_, 0, sizeof(preview_image_));
     ESP_LOGI(TAG, "CameraManager instance created");
 }
 
@@ -41,47 +39,6 @@ bool CameraManager::Initialize(const camera_config_t& config) {
     s->set_vflip(s, 1);  // 这里控制摄像头垂直镜像 写1镜像 写0不镜像
 
     // 初始化预览图片的内存
-    memset(&preview_image_, 0, sizeof(preview_image_));
-    preview_image_.header.magic = LV_IMAGE_HEADER_MAGIC;
-    preview_image_.header.cf = LV_COLOR_FORMAT_RGB565;
-    preview_image_.header.flags = LV_IMAGE_FLAGS_ALLOCATED | LV_IMAGE_FLAGS_MODIFIABLE;
-
-    switch (config.frame_size) {
-        case FRAMESIZE_SVGA:
-            preview_image_.header.w = 800;
-            preview_image_.header.h = 600;
-            break;
-        case FRAMESIZE_VGA:
-            preview_image_.header.w = 640;
-            preview_image_.header.h = 480;
-            break;
-        case FRAMESIZE_QVGA:
-            preview_image_.header.w = 320;
-            preview_image_.header.h = 240;
-            break;
-        case FRAMESIZE_128X128:
-            preview_image_.header.w = 128;
-            preview_image_.header.h = 128;
-            break;
-        case FRAMESIZE_240X240:
-            preview_image_.header.w = 240;
-            preview_image_.header.h = 240;
-            break;
-        default:
-            ESP_LOGE(TAG, "Unsupported frame size: %d, image preview will not be shown", config.frame_size);
-            preview_image_.data_size = 0;
-            preview_image_.data = nullptr;
-            return false;
-    }
-
-    preview_image_.header.stride = preview_image_.header.w * 2;
-    preview_image_.data_size = preview_image_.header.w * preview_image_.header.h * 2;
-    preview_image_.data = (uint8_t*)heap_caps_malloc(preview_image_.data_size, MALLOC_CAP_SPIRAM);
-    if (preview_image_.data == nullptr) {
-        ESP_LOGE(TAG, "Failed to allocate memory for preview image");
-        return false;
-    }
-
     initialized_ = true;
     ESP_LOGI(TAG, "Camera manager initialized successfully");
     return true;
@@ -93,11 +50,6 @@ CameraManager::~CameraManager() {
     if (fb_) {
         esp_camera_fb_return(fb_);
         fb_ = nullptr;
-    }
-    
-    if (preview_image_.data) {
-        heap_caps_free((void*)preview_image_.data);
-        preview_image_.data = nullptr;
     }
     
     if (initialized_) {
@@ -293,7 +245,6 @@ int CameraManager::GetJpegQuality() const {
 
 void CameraManager::ResetStatistics() {
     frames_captured_ = 0;
-    frames_dropped_ = 0;
     last_frame_time_ = esp_timer_get_time();
 }
 
@@ -311,38 +262,41 @@ bool CameraManager::Capture() {
         }
     }
 
-    if (preview_image_.data_size == 0) {
-        ESP_LOGW(TAG, "Skip preview because of unsupported frame size");
-        return true;
-    }
-    if (preview_image_.data == nullptr) {
-        ESP_LOGE(TAG, "Preview image data is not initialized");
-        return true;
-    }
-    // 显示预览图片
     auto display = Board::GetInstance().GetDisplay();
-    if (display != nullptr) {
-        // 检查摄像头的像素格式
-        sensor_t *s = esp_camera_sensor_get();
-        if (s != nullptr && s->pixformat == PIXFORMAT_JPEG) {
-            // JPEG格式需要解码为RGB565
-            if (jpg2rgb565(fb_->buf, fb_->len, (uint8_t*)preview_image_.data, JPG_SCALE_NONE)) {
-                display->SetPreviewImage(&preview_image_);
-            } else {
-                ESP_LOGE(TAG, "Failed to decode JPEG for preview");
-            }
-        } else {
-            // RGB565格式直接复制，需要字节序转换
-            auto src = (uint16_t*)fb_->buf;
-            auto dst = (uint16_t*)preview_image_.data;
-            size_t pixel_count = fb_->len / 2;
-            for (size_t i = 0; i < pixel_count; i++) {
-                // 交换每个16位字内的字节
-                dst[i] = __builtin_bswap16(src[i]);
-            }
-            display->SetPreviewImage(&preview_image_);
+    if (display == nullptr || fb_->width == 0 || fb_->height == 0) {
+        return true;
+    }
+
+    const size_t preview_size = fb_->width * fb_->height * sizeof(uint16_t);
+    auto* preview_data = static_cast<uint8_t*>(heap_caps_malloc(preview_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (preview_data == nullptr) {
+        ESP_LOGW(TAG, "Failed to allocate preview image buffer");
+        return true;
+    }
+
+    sensor_t* sensor = esp_camera_sensor_get();
+    if (sensor != nullptr && sensor->pixformat == PIXFORMAT_JPEG) {
+        if (!jpg2rgb565(fb_->buf, fb_->len, preview_data, JPG_SCALE_NONE)) {
+            ESP_LOGE(TAG, "Failed to decode JPEG for preview");
+            heap_caps_free(preview_data);
+            return true;
+        }
+    } else {
+        if (fb_->len < preview_size) {
+            ESP_LOGE(TAG, "RGB565 frame is too small for preview: %zu < %zu", fb_->len, preview_size);
+            heap_caps_free(preview_data);
+            return true;
+        }
+        auto* source = reinterpret_cast<const uint16_t*>(fb_->buf);
+        auto* destination = reinterpret_cast<uint16_t*>(preview_data);
+        for (size_t i = 0; i < preview_size / sizeof(uint16_t); ++i) {
+            destination[i] = __builtin_bswap16(source[i]);
         }
     }
+
+    auto* lcd_display = static_cast<LcdDisplay*>(display);
+    lcd_display->SetPreviewImage(std::make_unique<LvglAllocatedImage>(
+        preview_data, preview_size, fb_->width, fb_->height, fb_->width * sizeof(uint16_t), LV_COLOR_FORMAT_RGB565));
     return true;
 }
 

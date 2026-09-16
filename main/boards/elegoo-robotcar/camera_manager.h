@@ -3,14 +3,6 @@
 #include "camera.h"
 #include "esp_camera.h"
 #include <string>
-#include <thread>
-#include <memory>
-#include <lvgl.h>
-
-struct JpegChunk {
-    uint8_t* data;
-    size_t len;
-};
 
 class CameraManager : public Camera {
 public:
@@ -64,11 +56,9 @@ private:
     std::string explain_url_;
     std::string explain_token_;
     camera_fb_t* fb_ = nullptr;
-    lv_img_dsc_t preview_image_;
     
     // 流控制和统计
     bool streaming_enabled_;
     uint32_t frames_captured_;
-    uint32_t frames_dropped_;
     uint64_t last_frame_time_;
 };
